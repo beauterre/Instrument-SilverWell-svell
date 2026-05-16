@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>The Svell - WebFM Concept</title>
+    <style>
+        body { background: #1a1a1a; color: #d4af37; font-family: 'Georgia', serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+        .container { text-align: center; border: 2px solid #d4af37; padding: 40px; border-radius: 20px; background: #252525; box-shadow: 0 0 30px rgba(0,0,0,0.5); }
+        h1 { font-variant: small-caps; letter-spacing: 4px; margin-bottom: 10px; }
+        p { color: #aaa; font-style: italic; margin-bottom: 30px; }
+        button { background: transparent; border: 1px solid #d4af37; color: #d4af37; padding: 10px 20px; cursor: pointer; font-size: 16px; transition: all 0.3s; margin: 10px; border-radius: 5px; }
+        button:hover { background: #d4af37; color: #1a1a1a; }
+        button:disabled { border-color: #555; color: #555; cursor: not-allowed; }
+        #status { margin-top: 20px; font-size: 14px; color: #888; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>The Svell</h1>
+    <p>Silver-Silk Membranes & Mahogany Wells</p>
+    
+    <button id="genBtn">Generate Svell Samples</button>
+    <button id="demoBtn" disabled>Play Demo</button>
+    
+    <div id="status">Waiting for generation...</div>
+</div>
+
+<script>
+/**
+ * SVELL ENGINE CONFIGURATION
+ */
+const CONFIG = {
+    notes: [261.63, 329.63, 392.00, 493.88, 523.25], // C4, E4, G4, B4, C5
+    layers: {
+        ghost: { modIndex: 2, decay: 1.5, gain: 0.3 },   // Soft, ethereal
+        lyric: { modIndex: 15, decay: 0.8, gain: 0.6 },  // Balanced, rich
+        shatter: { modIndex: 45, decay: 0.4, gain: 0.8 } // Aggressive, metallic
+    },
+    sampleLength: 2.0 // seconds per sample
+};
+
+let audioCtx;
+let sampleLibrary = {}; // Stores the rendered buffers
+
+const genBtn = document.getElementById('genBtn');
+const demoBtn = document.getElementById('demoBtn');
+const status = document.getElementById('status');
+
+async function renderSvellSample(freq, layerSettings) {
+    // We use OfflineAudioContext to "bake" the FM synthesis
+    const offCtx = new OfflineAudioContext(1, 44100 * CONFIG.sampleLength, 44100);
+
+    // 1. The Carrier (Fundamental)
+    const carrier = offCtx.createOscillator();
+    carrier.type = 'sine';
+    carrier.frequency.setValueAtTime(freq, 0);
+
+    // 2. The Modulator (The Bloom/Richness)
+    const modulator = offCtx.createOscillator();
+    modulator.type = 'sine';
+    modulator.frequency.setValueAtTime(freq * 1.414, 0); // Inharmonic ratio for "membrane" feel
+
+    // Modulator Gain (The Index)
+    const modGain = offCtx.createGain();
+    modGain.gain.setValueAtTime(layerSettings.modIndex * freq, 0);
+    modGain.gain.exponentialRampToValueAtTime(1, CONFIG.sampleLength);
+
+    // 3. The Attack Envelope
+    const ampEnv = offCtx.createGain();
+    ampEnv.gain.setValueAtTime(0, 0);
+    ampEnv.gain.linearRampToValueAtTime(layerSettings.gain, 0.01); 
+    ampEnv.gain.exponentialRampToValueAtTime(0.001, layerSettings.decay * CONFIG.sampleLength);
+
+    // 4. The "Silverwell" Resonance (Simple Low-Pass Filter to mimic wood)
+    const filter = offCtx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(2000, 0);
+    filter.frequency.exponentialRampToValueAtTime(400, CONFIG.sampleLength);
+
+    // Routing: Modulator -> ModGain -> Carrier Frequency
+    modulator.connect(modGain);
+    modGain.connect(carrier.frequency);
+    
+    // Carrier -> Filter -> AmpEnv -> Output
+    carrier.connect(filter);
+    filter.connect(ampEnv);
+    ampEnv.connect(offCtx.destination);
+
+    modulator.start();
+    carrier.start();
+
+    const renderedBuffer = await offCtx.startRendering();
+    return renderedBuffer;
+}
+
+genBtn.onclick = async () => {
+    genBtn.disabled = true;
+    status.innerText = "Tuning the membranes... rendering samples...";
+    
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    for (let freq of CONFIG.notes) {
+        sampleLibrary[freq] = {};
+        for (let layer in CONFIG.layers) {
+            sampleLibrary[freq][layer] = await renderSvellSample(freq, CONFIG.layers[layer]);
+        }
+    }
+
+    status.innerText = "Svell samples generated. Ready for play.";
+    demoBtn.disabled = false;
+};
+
+async function playSvellNote(freq, layer, time, duration) {
+    const source = audioCtx.createBufferSource();
+    source.buffer = sampleLibrary[freq][layer];
+    
+    const gainNode = audioCtx.createGain();
+    gainNode.gain.setValueAtTime(0.5, time);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, time + duration);
+    
+    source.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    
+    source.start(time);
+}
+
+demoBtn.onclick = async () => {
+    const now = audioCtx.currentTime;
+    
+    // Simple Arpeggio demonstrating expression shift:
+    // Ghost -> Lyric -> Shatter -> Lyric -> Ghost
+    const sequence = [
+        { f: CONFIG.notes[0], l: 'ghost', t: 0 },
+        { f: CONFIG.notes[1], l: 'ghost', t: 0.5 },
+        { f: CONFIG.notes[2], l: 'lyric', t: 1.0 },
+        { f: CONFIG.notes[3], l: 'lyric', t: 1.5 },
+        { f: CONFIG.notes[4], l: 'shatter', t: 2.0 },
+        { f: CONFIG.notes[3], l: 'lyric', t: 2.5 },
+        { f: CONFIG.notes[2], l: 'lyric', t: 3.0 },
+        { f: CONFIG.notes[1], l: 'ghost', t: 3.5 },
+        { f: CONFIG.notes[0], l: 'ghost', t: 4.0 },
+    ];
+
+    sequence.forEach(note => {
+        playSvellNote(note.f, note.l, now + note.t, 1.5);
+    });
+};
+</script>
+</body>
+</html>
