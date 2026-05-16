@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>The Svell - Stress Test</title>
+    <style>
+        body { background: #0a0a0a; color: #d4af37; font-family: 'Georgia', serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; overflow: hidden; }
+        .container { text-align: center; border: 1px solid #d4af37; padding: 40px; border-radius: 20px; background: #111; box-shadow: 0 0 60px rgba(0,0,0,0.9); width: 500px; }
+        h1 { font-variant: small-caps; letter-spacing: 6px; margin-bottom: 10px; }
+        p { color: #777; font-style: italic; margin-bottom: 20px; }
+        
+        #progressContainer { width: 100%; height: 6px; background: #222; margin: 20px 0; border-radius: 3px; display: none; }
+        #progressBar { width: 0%; height: 100%; background: #d4af37; transition: width 0.05s linear; }
+        
+        .stats-box { display: flex; justify-content: space-around; margin-bottom: 20px; font-family: monospace; font-size: 12px; color: #aaa; }
+        .stat { display: flex; flex-direction: column; }
+        .stat span { color: #d4af37; font-size: 16px; }
+
+        button { background: transparent; border: 1px solid #d4af37; color: #d4af37; padding: 12px 24px; cursor: pointer; font-size: 16px; transition: 0.3s; border-radius: 5px; font-family: 'Georgia', serif; }
+        button:hover { background: #d4af37; color: #0a0a0a; }
+        button:disabled { border-color: #333; color: #333; cursor: not-allowed; }
+        #status { margin-top: 20px; font-size: 13px; color: #555; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>The Svell</h1>
+    <p>Full 88-Key Range | 6s Sustain | Memory Stress Test</p>
+    
+    <div class="stats-box">
+        <div class="stat">Notes Rendered<span id="statNotes">0 / 264</span></div>
+        <div class="stat">Est. RAM<span id="statRam">0 MB</span></div>
+    </div>
+
+    <button id="initBtn">Summon Full Instrument</button>
+    
+    <div id="progressContainer">
+        <div id="progressBar"></div>
+    </div>
+    
+    <button id="demoBtn" style="display:none;">Play Meditative Sequence</button>
+    <div id="status">Svell sleeping...</div>
+</div>
+
+<script>
+/** 
+ * SVELL ARCHITECTURE - STRESS TEST
+ */
+const SVELL_CONFIG = {
+    startNote: 21, // A0 (Standard Piano Start)
+    totalNotes: 88,
+    layers: {
+        ghost: { modIndex: 3, decay: 6.0, gain: 0.15 },
+        lyric: { modIndex: 18, decay: 5.0, gain: 0.4 },
+        shatter: { modIndex: 50, decay: 3.0, gain: 0.6 }
+    },
+    sampleLength: 6.0 // WORST CASE: 6 seconds
+};
+
+let audioCtx;
+let sampleLib = {};
+
+// Formula for Frequency: f = 440 * 2^((n-69)/12)
+function getFreq(n) {
+    return 440 * Math.pow(2, (n - 69) / 12);
+}
+
+async function bakeSvellNote(freq, layerKey) {
+    const settings = SVELL_CONFIG.layers[layerKey];
+    const offCtx = new OfflineAudioContext(1, 44100 * SVELL_CONFIG.sampleLength, 44100);
+
+    const carrier = offCtx.createOscillator();
+    const modulator = offCtx.createOscillator();
+    const modGain = offCtx.createGain();
+    const ampEnv = offCtx.createGain();
+    const filter = offCtx.createBiquadFilter();
+
+    carrier.frequency.setValueAtTime(freq, 0);
+    modulator.frequency.setValueAtTime(freq * 1.414, 0); 
+
+    modGain.gain.setValueAtTime(settings.modIndex * freq, 0);
+    modGain.gain.exponentialRampToValueAtTime(1, SVELL_CONFIG.sampleLength);
+
+    ampEnv.gain.setValueAtTime(0, 0);
+    ampEnv.gain.linearRampToValueAtTime(settings.gain, 0.02);
+    ampEnv.gain.exponentialRampToValueAtTime(0.0001, settings.decay);
+
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(3000, 0);
+    filter.frequency.exponentialRampToValueAtTime(200, SVELL_CONFIG.sampleLength);
+
+    modulator.connect(modGain);
+    modGain.connect(carrier.frequency);
+    carrier.connect(filter);
+    filter.connect(ampEnv);
+    ampEnv.connect(offCtx.destination);
+
+    modulator.start();
+    carrier.start();
+    return await offCtx.startRendering();
+}
+
+const initBtn = document.getElementById('initBtn');
+const demoBtn = document.getElementById('demoBtn');
+const progressBar = document.getElementById('progressBar');
+const progressContainer = document.getElementById('progressContainer');
+const status = document.getElementById('status');
+const statNotes = document.getElementById('statNotes');
+const statRam = document.getElementById('statRam');
+
+initBtn.onclick = async () => {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    
+    initBtn.style.display = 'none';
+    progressContainer.style.display = 'block';
+    
+    const layerKeys = Object.keys(SVELL_CONFIG.layers);
+    const totalTasks = SVELL_CONFIG.totalNotes * layerKeys.length;
+    let completed = 0;
+
+    for (let n = SVELL_CONFIG.startNote; n < SVELL_CONFIG.startNote + SVELL_CONFIG.totalNotes; n++) {
+        const freq = getFreq(n);
+        sampleLib[n] = {};
+        
+        for (let layer of layerKeys) {
+            sampleLib[n][layer] = await bakeSvellNote(freq, layer);
+            completed++;
+            
+            // UI Update
+            const percent = (completed / totalTasks) * 100;
+            progressBar.style.width = `${percent}%`;
+            statNotes.innerText = `completed/{completed} /completed/{totalTasks}`;
+            
+            // Memory Calculation: Total samples * 44100 * length * 4 bytes / 1024^2
+            const ramMb = (completed * 44100 * SVELL_CONFIG.sampleLength * 4) / (1024 * 1024);
+            statRam.innerText = `${ramMb.toFixed(1)} MB`;
+            
+            status.innerText = `Synthesizing ${layer} membrane...`;
+            
+            // Frame yield to prevent browser freeze
+            await new Promise(r => requestAnimationFrame(r));
+        }
+    }
+    
+    status.innerText = "Svell Fully Materialized.";
+    demoBtn.style.display = 'inline-block';
+};
+
+function playNote(note, layer, time, duration) {
+    const source = audioCtx.createBufferSource();
+    source.buffer = sampleLib[note][layer];
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(0.3, time);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+    source.connect(gain);
+    gain.connect(audioCtx.destination);
+    source.start(time);
+}
+
+demoBtn.onclick = () => {
+    demoBtn.disabled = true;
+    const now = audioCtx.currentTime;
+    
+    // Meditative Progression: i - IV - V - I (Slow, shifting expressions)
+    const chords = [
+        [48, 52, 55, 60], // C Maj
+        [41, 45, 48, 53], // F Maj
+        [43, 47, 50, 55], // G Maj
+        [48, 52, 55, 60]  // C Maj
+    ];
+
+    for (let i = 0; i < 4; i++) {
+        const chord = chords[i];
+        const startTime = now + (i * 4); // One chord every 4 seconds
+        
+        chord.forEach((note, index) => {
+            // Start with Ghost, bloom into Lyric, then an occasional Shatter
+            const layer = index === 3 ? 'lyric' : (i === 2 ? 'shatter' : 'ghost');
+            playNote(note, layer, startTime + (index * 0.6), 6.0);
+        });
+    }
+    
+    status.innerText = "Performing Meditative Sequence...";
+};
+</script>
+</body>
+</html>
